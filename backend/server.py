@@ -40,6 +40,87 @@ logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_SIZE = 500 * 1024 * 1024
 
+# ==================== Helper Functions ====================
+
+def parse_range_header(range_header: str, file_size: int):
+    """Parse HTTP Range header and return start, end positions"""
+    try:
+        range_str = range_header.replace("bytes=", "")
+        start, end = range_str.split("-")
+        start = int(start) if start else 0
+        end = int(end) if end else file_size - 1
+        
+        if start >= file_size or end >= file_size:
+            return None, None
+        
+        return start, end
+    except:
+        return None, None
+
+async def range_file_reader(file_path: Path, start: int, end: int, chunk_size: int = 8192):
+    """Generator to read file in chunks for Range requests"""
+    async with aiofiles.open(file_path, 'rb') as f:
+        await f.seek(start)
+        remaining = end - start + 1
+        
+        while remaining > 0:
+            chunk = await f.read(min(chunk_size, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+
+async def recover_orphaned_jobs():
+    """
+    Recover orphaned processing jobs on startup
+    Mark jobs as failed if they were processing when server restarted
+    """
+    logger.info("Starting orphaned job recovery...")
+    
+    cutoff_time = datetime.now(timezone.utc)
+    
+    orphaned_jobs = await db.dubbing_jobs.find({
+        "status": "processing"
+    }, {"_id": 0}).to_list(1000)
+    
+    recovered_count = 0
+    for job in orphaned_jobs:
+        last_heartbeat = job.get("last_heartbeat")
+        
+        if last_heartbeat:
+            if isinstance(last_heartbeat, str):
+                last_heartbeat = datetime.fromisoformat(last_heartbeat)
+            if last_heartbeat.tzinfo is None:
+                last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
+            
+            time_diff = (cutoff_time - last_heartbeat).total_seconds()
+            
+            if time_diff > 60:
+                await db.dubbing_jobs.update_one(
+                    {"job_id": job["job_id"]},
+                    {"$set": {
+                        "status": "failed",
+                        "current_stage": "Failed: Server restart during processing",
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }}
+                )
+                recovered_count += 1
+                logger.warning(f"Marked orphaned job as failed: {job['job_id']}")
+        else:
+            await db.dubbing_jobs.update_one(
+                {"job_id": job["job_id"]},
+                {"$set": {
+                    "status": "failed",
+                    "current_stage": "Failed: Server restart during processing",
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }}
+            )
+            recovered_count += 1
+            logger.warning(f"Marked orphaned job as failed: {job['job_id']}")
+    
+    logger.info(f"Orphaned job recovery complete. Recovered {recovered_count} jobs.")
+    return recovered_count
+
 # ==================== Models ====================
 
 class User(BaseModel):
@@ -323,7 +404,11 @@ async def delete_movie(movie_id: str, current_user: dict = Depends(get_current_u
     return {"message": "Movie and related dubbing jobs deleted successfully"}
 
 @api_router.get("/movies/{movie_id}/stream")
-async def stream_movie(movie_id: str, current_user: dict = Depends(get_current_user)):
+async def stream_movie(
+    movie_id: str, 
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
     movie = await db.movies.find_one({"movie_id": movie_id, "user_id": current_user["user_id"]}, {"_id": 0})
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
@@ -333,11 +418,46 @@ async def stream_movie(movie_id: str, current_user: dict = Depends(get_current_u
         logger.error(f"Movie file not found: {file_path}")
         raise HTTPException(status_code=404, detail="Movie file not found on server")
     
-    return FileResponse(
-        path=file_path,
-        media_type="video/mp4",
-        filename=movie["original_filename"]
-    )
+    file_size = file_path.stat().st_size
+    range_header = request.headers.get("range")
+    
+    if range_header:
+        start, end = parse_range_header(range_header, file_size)
+        
+        if start is None or end is None:
+            raise HTTPException(status_code=416, detail="Range not satisfiable")
+        
+        content_length = end - start + 1
+        
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(content_length),
+            "Content-Type": "video/mp4",
+        }
+        
+        logger.info(f"Streaming movie {movie_id} with range: {start}-{end}/{file_size}")
+        
+        return StreamingResponse(
+            range_file_reader(file_path, start, end),
+            status_code=206,
+            headers=headers,
+            media_type="video/mp4"
+        )
+    else:
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+            "Content-Type": "video/mp4",
+        }
+        
+        logger.info(f"Streaming full movie {movie_id}")
+        
+        return StreamingResponse(
+            range_file_reader(file_path, 0, file_size - 1),
+            headers=headers,
+            media_type="video/mp4"
+        )
 
 # ==================== Dubbing Job Routes ====================
 
@@ -357,13 +477,19 @@ async def mock_ai_processing(job_id: str, movie_id: str, source_lang: str, targe
     
     try:
         for stage_info in stages:
+            job = await db.dubbing_jobs.find_one({"job_id": job_id}, {"_id": 0})
+            if not job or job["status"] == "cancelled":
+                logger.info(f"Job {job_id} was cancelled")
+                return
+            
             await asyncio.sleep(stage_info["delay"])
             await db.dubbing_jobs.update_one(
                 {"job_id": job_id},
                 {"$set": {
                     "current_stage": stage_info["stage"],
                     "progress": stage_info["progress"],
-                    "updated_at": datetime.now(timezone.utc).isoformat()
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "last_heartbeat": datetime.now(timezone.utc).isoformat()
                 }}
             )
             logger.info(f"Job {job_id}: {stage_info['stage']} - {stage_info['progress']}%")
@@ -385,7 +511,8 @@ async def mock_ai_processing(job_id: str, movie_id: str, source_lang: str, targe
                 "current_stage": "Completed",
                 "output_path": str(output_path),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-                "completed_at": datetime.now(timezone.utc).isoformat()
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "last_heartbeat": datetime.now(timezone.utc).isoformat()
             }}
         )
         logger.info(f"Job {job_id} completed successfully")
@@ -426,7 +553,8 @@ async def create_dubbing_job(request: Request, current_user: dict = Depends(get_
         "output_path": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "completed_at": None
+        "completed_at": None,
+        "last_heartbeat": datetime.now(timezone.utc).isoformat()
     }
     await db.dubbing_jobs.insert_one(job_doc)
     
@@ -478,7 +606,11 @@ async def delete_dubbing_job(job_id: str, current_user: dict = Depends(get_curre
     return {"message": "Dubbing job deleted successfully"}
 
 @api_router.get("/dubbing/{job_id}/download")
-async def download_dubbed_movie(job_id: str, current_user: dict = Depends(get_current_user)):
+async def download_dubbed_movie(
+    job_id: str, 
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
     logger.info(f"Download request for job: {job_id} by user: {current_user['user_id']}")
     
     job = await db.dubbing_jobs.find_one({"job_id": job_id, "user_id": current_user["user_id"]}, {"_id": 0})
@@ -501,15 +633,55 @@ async def download_dubbed_movie(job_id: str, current_user: dict = Depends(get_cu
         logger.error(f"Output file missing: {output_path}")
         raise HTTPException(status_code=404, detail="Output file not found on server. It may have been deleted.")
     
-    logger.info(f"Sending file: {output_path.name} for job: {job_id}")
-    return FileResponse(
-        path=output_path,
-        filename=f"dubbed_{job_id}.mp4",
-        media_type="video/mp4"
-    )
+    file_size = output_path.stat().st_size
+    range_header = request.headers.get("range")
+    
+    if range_header:
+        start, end = parse_range_header(range_header, file_size)
+        
+        if start is None or end is None:
+            raise HTTPException(status_code=416, detail="Range not satisfiable")
+        
+        content_length = end - start + 1
+        
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(content_length),
+            "Content-Type": "video/mp4",
+            "Content-Disposition": f'attachment; filename="dubbed_{job_id}.mp4"'
+        }
+        
+        logger.info(f"Downloading job {job_id} with range: {start}-{end}/{file_size}")
+        
+        return StreamingResponse(
+            range_file_reader(output_path, start, end),
+            status_code=206,
+            headers=headers,
+            media_type="video/mp4"
+        )
+    else:
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+            "Content-Type": "video/mp4",
+            "Content-Disposition": f'attachment; filename="dubbed_{job_id}.mp4"'
+        }
+        
+        logger.info(f"Downloading full job {job_id}")
+        
+        return StreamingResponse(
+            range_file_reader(output_path, 0, file_size - 1),
+            headers=headers,
+            media_type="video/mp4"
+        )
 
 @api_router.get("/dubbing/{job_id}/stream")
-async def stream_dubbed_movie(job_id: str, current_user: dict = Depends(get_current_user)):
+async def stream_dubbed_movie(
+    job_id: str, 
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
     logger.info(f"Stream request for job: {job_id} by user: {current_user['user_id']}")
     
     job = await db.dubbing_jobs.find_one({"job_id": job_id, "user_id": current_user["user_id"]}, {"_id": 0})
@@ -524,11 +696,46 @@ async def stream_dubbed_movie(job_id: str, current_user: dict = Depends(get_curr
         logger.error(f"Output file missing for streaming: {output_path}")
         raise HTTPException(status_code=404, detail="Output file not found")
     
-    return FileResponse(
-        path=output_path,
-        media_type="video/mp4",
-        filename=f"dubbed_{job_id}.mp4"
-    )
+    file_size = output_path.stat().st_size
+    range_header = request.headers.get("range")
+    
+    if range_header:
+        start, end = parse_range_header(range_header, file_size)
+        
+        if start is None or end is None:
+            raise HTTPException(status_code=416, detail="Range not satisfiable")
+        
+        content_length = end - start + 1
+        
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(content_length),
+            "Content-Type": "video/mp4",
+        }
+        
+        logger.info(f"Streaming job {job_id} with range: {start}-{end}/{file_size}")
+        
+        return StreamingResponse(
+            range_file_reader(output_path, start, end),
+            status_code=206,
+            headers=headers,
+            media_type="video/mp4"
+        )
+    else:
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+            "Content-Type": "video/mp4",
+        }
+        
+        logger.info(f"Streaming full job {job_id}")
+        
+        return StreamingResponse(
+            range_file_reader(output_path, 0, file_size - 1),
+            headers=headers,
+            media_type="video/mp4"
+        )
 
 # ==================== Analytics Route ====================
 
@@ -565,6 +772,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    logger.info("CineMorph AI backend starting...")
+    await recover_orphaned_jobs()
+    logger.info("CineMorph AI backend ready!")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    logger.info("CineMorph AI backend shutting down...")
     client.close()
+    logger.info("Database connection closed")
