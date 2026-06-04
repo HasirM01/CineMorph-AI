@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
-import { Download, Film, Loader2 } from 'lucide-react';
+import { Download, Film, Loader2, Play, Trash2 } from 'lucide-react';
 import { DashboardLayout } from '@/components/DashboardLayout';
+import { VideoPlayer } from '@/components/VideoPlayer';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { toast } from 'sonner';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -11,6 +13,8 @@ export const DownloadsPage = () => {
   const [completedJobs, setCompletedJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState({});
+  const [selectedVideo, setSelectedVideo] = useState(null);
+  const [deleteDialog, setDeleteDialog] = useState({ isOpen: false, jobId: null, jobTitle: '' });
 
   useEffect(() => {
     fetchCompletedJobs();
@@ -50,9 +54,36 @@ export const DownloadsPage = () => {
       toast.success('Download started!');
     } catch (error) {
       console.error('Download error:', error);
-      toast.error('Failed to download movie');
+      toast.error(error.response?.data?.detail || 'Failed to download movie');
     } finally {
       setDownloading((prev) => ({ ...prev, [job.job_id]: false }));
+    }
+  };
+
+  const handlePreview = (job) => {
+    setSelectedVideo({
+      url: `${API}/dubbing/${job.job_id}/stream`,
+      title: `${job.movie_title} (${job.source_language?.toUpperCase()} → ${job.target_language?.toUpperCase()})`
+    });
+  };
+
+  const handleDeleteClick = (job) => {
+    setDeleteDialog({
+      isOpen: true,
+      jobId: job.job_id,
+      jobTitle: job.movie_title || 'Untitled Movie'
+    });
+  };
+
+  const handleDeleteConfirm = async () => {
+    try {
+      await axios.delete(`${API}/dubbing/${deleteDialog.jobId}`, { withCredentials: true });
+      toast.success('Dubbed movie deleted successfully');
+      setDeleteDialog({ isOpen: false, jobId: null, jobTitle: '' });
+      fetchCompletedJobs();
+    } catch (error) {
+      console.error('Delete error:', error);
+      toast.error(error.response?.data?.detail || 'Failed to delete');
     }
   };
 
@@ -119,29 +150,65 @@ export const DownloadsPage = () => {
                 <p className="text-sm text-zinc-400 mb-4" style={{ fontFamily: 'Manrope, sans-serif' }}>
                   {job.source_language?.toUpperCase()} → {job.target_language?.toUpperCase()}
                 </p>
-                <button
-                  data-testid={`download-btn-${job.job_id}`}
-                  onClick={() => handleDownload(job)}
-                  disabled={downloading[job.job_id]}
-                  className="w-full bg-[#E50914] hover:bg-[#c40812] disabled:bg-zinc-700 disabled:cursor-not-allowed text-white rounded-lg px-4 py-3 font-semibold shadow-[0_0_20px_rgba(229,9,20,0.4)] transition-all flex items-center justify-center gap-2"
-                >
-                  {downloading[job.job_id] ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      Downloading...
-                    </>
-                  ) : (
-                    <>
-                      <Download className="w-5 h-5" />
-                      Download
-                    </>
-                  )}
-                </button>
+                <div className="space-y-2">
+                  <button
+                    data-testid={`preview-btn-${job.job_id}`}
+                    onClick={() => handlePreview(job)}
+                    className="w-full bg-purple-600 hover:bg-purple-700 text-white rounded-lg px-4 py-3 font-semibold transition-all flex items-center justify-center gap-2"
+                  >
+                    <Play className="w-5 h-5" />
+                    Preview
+                  </button>
+                  <button
+                    data-testid={`download-btn-${job.job_id}`}
+                    onClick={() => handleDownload(job)}
+                    disabled={downloading[job.job_id]}
+                    className="w-full bg-[#E50914] hover:bg-[#c40812] disabled:bg-zinc-700 disabled:cursor-not-allowed text-white rounded-lg px-4 py-3 font-semibold shadow-[0_0_20px_rgba(229,9,20,0.4)] transition-all flex items-center justify-center gap-2"
+                  >
+                    {downloading[job.job_id] ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        Downloading...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-5 h-5" />
+                        Download
+                      </>
+                    )}
+                  </button>
+                  <button
+                    data-testid={`delete-download-btn-${job.job_id}`}
+                    onClick={() => handleDeleteClick(job)}
+                    className="w-full bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/20 rounded-lg px-4 py-3 font-semibold transition-all flex items-center justify-center gap-2"
+                  >
+                    <Trash2 className="w-5 h-5" />
+                    Delete
+                  </button>
+                </div>
               </motion.div>
             ))}
           </div>
         )}
       </div>
+
+      <AnimatePresence>
+        {selectedVideo && (
+          <VideoPlayer
+            videoUrl={selectedVideo.url}
+            title={selectedVideo.title}
+            onClose={() => setSelectedVideo(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      <ConfirmDialog
+        isOpen={deleteDialog.isOpen}
+        onClose={() => setDeleteDialog({ isOpen: false, jobId: null, jobTitle: '' })}
+        onConfirm={handleDeleteConfirm}
+        title="Delete Dubbed Movie"
+        message={`Are you sure you want to delete "${deleteDialog.jobTitle}"? This will permanently remove the dubbed movie file.`}
+      />
     </DashboardLayout>
   );
 };

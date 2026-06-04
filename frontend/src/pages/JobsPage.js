@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
-import { Clock, CheckCircle, XCircle, Loader2, Film, RefreshCw } from 'lucide-react';
+import { Clock, CheckCircle, XCircle, Loader2, Film, RefreshCw, Play, Trash2 } from 'lucide-react';
 import { DashboardLayout } from '@/components/DashboardLayout';
+import { VideoPlayer } from '@/components/VideoPlayer';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
 
@@ -12,6 +14,8 @@ export const JobsPage = () => {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedVideo, setSelectedVideo] = useState(null);
+  const [deleteDialog, setDeleteDialog] = useState({ isOpen: false, jobId: null, jobTitle: '' });
 
   useEffect(() => {
     fetchJobs();
@@ -38,6 +42,33 @@ export const JobsPage = () => {
   const handleRefresh = () => {
     setRefreshing(true);
     fetchJobs();
+  };
+
+  const handlePreview = (job) => {
+    setSelectedVideo({
+      url: `${API}/dubbing/${job.job_id}/stream`,
+      title: `${job.movie_title} (${job.source_language?.toUpperCase()} → ${job.target_language?.toUpperCase()})`
+    });
+  };
+
+  const handleDeleteClick = (job) => {
+    setDeleteDialog({
+      isOpen: true,
+      jobId: job.job_id,
+      jobTitle: job.movie_title || 'Untitled Movie'
+    });
+  };
+
+  const handleDeleteConfirm = async () => {
+    try {
+      await axios.delete(`${API}/dubbing/${deleteDialog.jobId}`, { withCredentials: true });
+      toast.success('Dubbing job deleted successfully');
+      setDeleteDialog({ isOpen: false, jobId: null, jobTitle: '' });
+      fetchJobs();
+    } catch (error) {
+      console.error('Delete error:', error);
+      toast.error(error.response?.data?.detail || 'Failed to delete job');
+    }
   };
 
   const getStatusColor = (status) => {
@@ -164,15 +195,44 @@ export const JobsPage = () => {
                 )}
 
                 {job.status === 'completed' && (
-                  <div className="mt-4">
+                  <div className="mt-4 flex gap-2">
+                    <button
+                      onClick={() => handlePreview(job)}
+                      data-testid={`preview-job-btn-${job.job_id}`}
+                      className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-all"
+                    >
+                      <Play className="w-4 h-4" />
+                      Preview
+                    </button>
                     <a
                       href={`/downloads`}
                       data-testid={`download-job-btn-${job.job_id}`}
                       className="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-all"
                     >
                       <CheckCircle className="w-4 h-4" />
-                      View Download
+                      Download
                     </a>
+                    <button
+                      onClick={() => handleDeleteClick(job)}
+                      data-testid={`delete-job-btn-${job.job_id}`}
+                      className="inline-flex items-center gap-2 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/20 rounded-lg px-4 py-2 text-sm font-semibold transition-all"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete
+                    </button>
+                  </div>
+                )}
+
+                {job.status === 'failed' && (
+                  <div className="mt-4">
+                    <button
+                      onClick={() => handleDeleteClick(job)}
+                      data-testid={`delete-failed-job-btn-${job.job_id}`}
+                      className="inline-flex items-center gap-2 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/20 rounded-lg px-4 py-2 text-sm font-semibold transition-all"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete
+                    </button>
                   </div>
                 )}
               </motion.div>
@@ -180,6 +240,24 @@ export const JobsPage = () => {
           </div>
         )}
       </div>
+
+      <AnimatePresence>
+        {selectedVideo && (
+          <VideoPlayer
+            videoUrl={selectedVideo.url}
+            title={selectedVideo.title}
+            onClose={() => setSelectedVideo(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      <ConfirmDialog
+        isOpen={deleteDialog.isOpen}
+        onClose={() => setDeleteDialog({ isOpen: false, jobId: null, jobTitle: '' })}
+        onConfirm={handleDeleteConfirm}
+        title="Delete Dubbing Job"
+        message={`Are you sure you want to delete "${deleteDialog.jobTitle}"? This will permanently remove the dubbed output file.`}
+      />
     </DashboardLayout>
   );
 };

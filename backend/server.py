@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Request, Response, Cookie
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -32,7 +32,13 @@ TEMP_DIR = STORAGE_DIR / "temp"
 for dir_path in [UPLOADS_DIR, PROCESSED_DIR, TEMP_DIR]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+MAX_UPLOAD_SIZE = 500 * 1024 * 1024
 
 # ==================== Models ====================
 
@@ -172,13 +178,17 @@ async def exchange_session(request: Request, response: Response):
         await db.users.insert_one(user_doc)
     
     session_token = oauth_data["session_token"]
-    session_doc = {
-        "user_id": user_id,
-        "session_token": session_token,
-        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    await db.user_sessions.insert_one(session_doc)
+    
+    await db.user_sessions.update_one(
+        {"session_token": session_token},
+        {"$set": {
+            "user_id": user_id,
+            "session_token": session_token,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }},
+        upsert=True
+    )
     
     response.set_cookie(
         key="session_token",
@@ -225,6 +235,8 @@ LANGUAGES = [
     {"code": "ru", "name": "Russian", "native_name": "Русский"},
 ]
 
+VALID_LANGUAGE_CODES = {lang["code"] for lang in LANGUAGES}
+
 @api_router.get("/languages")
 async def get_languages():
     return LANGUAGES
@@ -248,8 +260,14 @@ async def upload_movie(
     file_size = 0
     async with aiofiles.open(file_path, 'wb') as f:
         while chunk := await file.read(1024 * 1024):
-            await f.write(chunk)
             file_size += len(chunk)
+            if file_size > MAX_UPLOAD_SIZE:
+                await f.close()
+                file_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail=f"File too large. Max size: {MAX_UPLOAD_SIZE / (1024*1024):.0f} MB")
+            await f.write(chunk)
+    
+    logger.info(f"Movie uploaded: {movie_id}, size: {file_size} bytes, user: {current_user['user_id']}")
     
     detected_language = "en"
     
@@ -290,11 +308,36 @@ async def delete_movie(movie_id: str, current_user: dict = Depends(get_current_u
     
     if Path(movie["file_path"]).exists():
         Path(movie["file_path"]).unlink()
+        logger.info(f"Deleted movie file: {movie['file_path']}")
+    
+    related_jobs = await db.dubbing_jobs.find({"movie_id": movie_id}, {"_id": 0}).to_list(100)
+    for job in related_jobs:
+        if job.get("output_path") and Path(job["output_path"]).exists():
+            Path(job["output_path"]).unlink()
+            logger.info(f"Deleted dubbed output: {job['output_path']}")
     
     await db.movies.delete_one({"movie_id": movie_id})
     await db.dubbing_jobs.delete_many({"movie_id": movie_id})
     
-    return {"message": "Movie deleted successfully"}
+    logger.info(f"Deleted movie and related jobs: {movie_id}")
+    return {"message": "Movie and related dubbing jobs deleted successfully"}
+
+@api_router.get("/movies/{movie_id}/stream")
+async def stream_movie(movie_id: str, current_user: dict = Depends(get_current_user)):
+    movie = await db.movies.find_one({"movie_id": movie_id, "user_id": current_user["user_id"]}, {"_id": 0})
+    if not movie:
+        raise HTTPException(status_code=404, detail="Movie not found")
+    
+    file_path = Path(movie["file_path"])
+    if not file_path.exists():
+        logger.error(f"Movie file not found: {file_path}")
+        raise HTTPException(status_code=404, detail="Movie file not found on server")
+    
+    return FileResponse(
+        path=file_path,
+        media_type="video/mp4",
+        filename=movie["original_filename"]
+    )
 
 # ==================== Dubbing Job Routes ====================
 
@@ -312,42 +355,59 @@ async def mock_ai_processing(job_id: str, movie_id: str, source_lang: str, targe
         {"stage": "Finalizing Output", "progress": 100, "delay": 2},
     ]
     
-    for stage_info in stages:
-        await asyncio.sleep(stage_info["delay"])
+    try:
+        for stage_info in stages:
+            await asyncio.sleep(stage_info["delay"])
+            await db.dubbing_jobs.update_one(
+                {"job_id": job_id},
+                {"$set": {
+                    "current_stage": stage_info["stage"],
+                    "progress": stage_info["progress"],
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }}
+            )
+            logger.info(f"Job {job_id}: {stage_info['stage']} - {stage_info['progress']}%")
+        
+        movie = await db.movies.find_one({"movie_id": movie_id}, {"_id": 0})
+        output_filename = f"{job_id}_dubbed.mp4"
+        output_path = PROCESSED_DIR / output_filename
+        
+        if movie and Path(movie["file_path"]).exists():
+            import shutil
+            shutil.copy(movie["file_path"], output_path)
+            logger.info(f"Created dubbed output: {output_path}")
+        
         await db.dubbing_jobs.update_one(
             {"job_id": job_id},
             {"$set": {
-                "current_stage": stage_info["stage"],
-                "progress": stage_info["progress"],
+                "status": "completed",
+                "progress": 100,
+                "current_stage": "Completed",
+                "output_path": str(output_path),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "completed_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        logger.info(f"Job {job_id} completed successfully")
+    except Exception as e:
+        logger.error(f"Job {job_id} failed: {str(e)}")
+        await db.dubbing_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "status": "failed",
+                "current_stage": f"Failed: {str(e)}",
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }}
         )
-    
-    movie = await db.movies.find_one({"movie_id": movie_id}, {"_id": 0})
-    output_filename = f"{job_id}_dubbed.mp4"
-    output_path = PROCESSED_DIR / output_filename
-    
-    if Path(movie["file_path"]).exists():
-        import shutil
-        shutil.copy(movie["file_path"], output_path)
-    
-    await db.dubbing_jobs.update_one(
-        {"job_id": job_id},
-        {"$set": {
-            "status": "completed",
-            "progress": 100,
-            "current_stage": "Completed",
-            "output_path": str(output_path),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "completed_at": datetime.now(timezone.utc).isoformat()
-        }}
-    )
 
 @api_router.post("/dubbing/create")
 async def create_dubbing_job(request: Request, current_user: dict = Depends(get_current_user)):
     data = await request.json()
     movie_id = data.get("movie_id")
     target_language = data.get("target_language")
+    
+    if target_language not in VALID_LANGUAGE_CODES:
+        raise HTTPException(status_code=400, detail=f"Invalid target language. Must be one of: {', '.join(VALID_LANGUAGE_CODES)}")
     
     movie = await db.movies.find_one({"movie_id": movie_id, "user_id": current_user["user_id"]}, {"_id": 0})
     if not movie:
@@ -369,6 +429,8 @@ async def create_dubbing_job(request: Request, current_user: dict = Depends(get_
         "completed_at": None
     }
     await db.dubbing_jobs.insert_one(job_doc)
+    
+    logger.info(f"Created dubbing job: {job_id} for movie: {movie_id}")
     
     asyncio.create_task(mock_ai_processing(
         job_id, movie_id, job_doc["source_language"], target_language, current_user["user_id"]
@@ -400,23 +462,72 @@ async def get_dubbing_job(job_id: str, current_user: dict = Depends(get_current_
     
     return job
 
-@api_router.get("/dubbing/{job_id}/download")
-async def download_dubbed_movie(job_id: str, current_user: dict = Depends(get_current_user)):
+@api_router.delete("/dubbing/{job_id}")
+async def delete_dubbing_job(job_id: str, current_user: dict = Depends(get_current_user)):
     job = await db.dubbing_jobs.find_one({"job_id": job_id, "user_id": current_user["user_id"]}, {"_id": 0})
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    if job["status"] != "completed" or not job.get("output_path"):
-        raise HTTPException(status_code=400, detail="Dubbing not completed yet")
+    if job.get("output_path") and Path(job["output_path"]).exists():
+        Path(job["output_path"]).unlink()
+        logger.info(f"Deleted dubbed output: {job['output_path']}")
+    
+    await db.dubbing_jobs.delete_one({"job_id": job_id})
+    logger.info(f"Deleted dubbing job: {job_id}")
+    
+    return {"message": "Dubbing job deleted successfully"}
+
+@api_router.get("/dubbing/{job_id}/download")
+async def download_dubbed_movie(job_id: str, current_user: dict = Depends(get_current_user)):
+    logger.info(f"Download request for job: {job_id} by user: {current_user['user_id']}")
+    
+    job = await db.dubbing_jobs.find_one({"job_id": job_id, "user_id": current_user["user_id"]}, {"_id": 0})
+    if not job:
+        logger.error(f"Job not found: {job_id}")
+        raise HTTPException(status_code=404, detail="Dubbing job not found")
+    
+    if job["status"] != "completed":
+        logger.error(f"Job not completed: {job_id}, status: {job['status']}")
+        raise HTTPException(status_code=400, detail=f"Dubbing not completed yet. Status: {job['status']}")
+    
+    if not job.get("output_path"):
+        logger.error(f"No output path for job: {job_id}")
+        raise HTTPException(status_code=404, detail="Output file path not found in database")
     
     output_path = Path(job["output_path"])
-    if not output_path.exists():
-        raise HTTPException(status_code=404, detail="Output file not found")
+    logger.info(f"Output path: {output_path}, exists: {output_path.exists()}")
     
+    if not output_path.exists():
+        logger.error(f"Output file missing: {output_path}")
+        raise HTTPException(status_code=404, detail="Output file not found on server. It may have been deleted.")
+    
+    logger.info(f"Sending file: {output_path.name} for job: {job_id}")
     return FileResponse(
         path=output_path,
         filename=f"dubbed_{job_id}.mp4",
         media_type="video/mp4"
+    )
+
+@api_router.get("/dubbing/{job_id}/stream")
+async def stream_dubbed_movie(job_id: str, current_user: dict = Depends(get_current_user)):
+    logger.info(f"Stream request for job: {job_id} by user: {current_user['user_id']}")
+    
+    job = await db.dubbing_jobs.find_one({"job_id": job_id, "user_id": current_user["user_id"]}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Dubbing job not found")
+    
+    if job["status"] != "completed" or not job.get("output_path"):
+        raise HTTPException(status_code=400, detail="Dubbed movie not ready for streaming")
+    
+    output_path = Path(job["output_path"])
+    if not output_path.exists():
+        logger.error(f"Output file missing for streaming: {output_path}")
+        raise HTTPException(status_code=404, detail="Output file not found")
+    
+    return FileResponse(
+        path=output_path,
+        media_type="video/mp4",
+        filename=f"dubbed_{job_id}.mp4"
     )
 
 # ==================== Analytics Route ====================
@@ -452,11 +563,6 @@ app.add_middleware(
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
-)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
 @app.on_event("shutdown")

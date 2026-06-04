@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { Film, LayoutDashboard, Upload, Download, Settings, LogOut, Menu, X, BarChart3 } from 'lucide-react';
+import { Film, LayoutDashboard, Upload, Download, Settings, LogOut, Menu, X, BarChart3, Video } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -18,6 +18,7 @@ export const DashboardLayout = ({ children }) => {
   const navItems = [
     { path: '/dashboard', icon: <LayoutDashboard className="w-5 h-5" />, label: 'Dashboard', testId: 'nav-dashboard' },
     { path: '/upload', icon: <Upload className="w-5 h-5" />, label: 'Upload', testId: 'nav-upload' },
+    { path: '/movies', icon: <Video className="w-5 h-5" />, label: 'My Movies', testId: 'nav-movies' },
     { path: '/jobs', icon: <BarChart3 className="w-5 h-5" />, label: 'My Jobs', testId: 'nav-jobs' },
     { path: '/downloads', icon: <Download className="w-5 h-5" />, label: 'Downloads', testId: 'nav-downloads' },
     { path: '/settings', icon: <Settings className="w-5 h-5" />, label: 'Settings', testId: 'nav-settings' },

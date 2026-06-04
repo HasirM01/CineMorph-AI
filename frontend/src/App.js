@@ -7,6 +7,7 @@ import { Landing } from '@/pages/Landing';
 import { Login } from '@/pages/Login';
 import { Dashboard } from '@/pages/Dashboard';
 import { UploadPage } from '@/pages/UploadPage';
+import { MoviesPage } from '@/pages/MoviesPage';
 import { JobsPage } from '@/pages/JobsPage';
 import { DownloadsPage } from '@/pages/DownloadsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
@@ -37,6 +38,14 @@ function AppRouter() {
         element={
           <ProtectedRoute>
             <UploadPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/movies"
+        element={
+          <ProtectedRoute>
+            <MoviesPage />
           </ProtectedRoute>
         }
       />
