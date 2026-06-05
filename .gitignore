@@ -54,3 +54,9 @@ test_reports/
 frontend/node_modules/.cache/default-development/0.pack
 backend/storage/uploads/movie_8e6b92639b70.mp4
 backend/storage/processed/job_93e373657f2d_dubbed.mp4
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
