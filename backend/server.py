@@ -1253,6 +1253,39 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     logger.info("CineMorph AI backend starting...")
+    
+    # Validate FFmpeg and ffprobe availability
+    try:
+        ffmpeg_result = subprocess.run(
+            ['ffmpeg', '-version'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if ffmpeg_result.returncode != 0:
+            logger.error("FFmpeg is not working properly")
+            raise RuntimeError("FFmpeg validation failed")
+        
+        ffprobe_result = subprocess.run(
+            ['ffprobe', '-version'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if ffprobe_result.returncode != 0:
+            logger.error("ffprobe is not working properly")
+            raise RuntimeError("ffprobe validation failed")
+        
+        logger.info("✓ FFmpeg and ffprobe are available and working")
+        
+    except FileNotFoundError as e:
+        logger.error(f"CRITICAL: FFmpeg or ffprobe not found in PATH: {e}")
+        logger.error("Please install FFmpeg: sudo apt-get install -y ffmpeg")
+        raise RuntimeError("FFmpeg/ffprobe not installed. Real AI processing will not work.")
+    except Exception as e:
+        logger.error(f"Error validating FFmpeg: {e}")
+        raise
+    
     await recover_orphaned_jobs()
     logger.info("CineMorph AI backend ready!")
 
