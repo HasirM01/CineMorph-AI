@@ -105,10 +105,12 @@ def get_video_duration(video_path: Path) -> float:
         )
         data = json.loads(result.stdout)
         duration = float(data['format']['duration'])
+        if duration <= 0:
+            raise ValueError(f"Invalid video duration: {duration}")
         return duration
     except Exception as e:
         logger.error(f"Failed to get video duration: {e}")
-        return 0.0
+        raise HTTPException(status_code=400, detail=f"Could not determine video duration: {str(e)}")
 
 def estimate_translation_tokens(text: str, target_language: str) -> dict:
     """Estimate GPT-4o tokens for translation"""
@@ -151,6 +153,9 @@ async def calculate_processing_cost(video_path: Path, estimated_duration: float 
     
     total_cost = whisper_cost + gpt_cost + tts_cost
     
+    # Estimate processing time: ~1.5x video duration + 30s overhead
+    estimated_time_minutes = max(1, int((estimated_duration * 1.5 + 30) / 60))
+    
     return {
         "duration_seconds": estimated_duration,
         "duration_minutes": duration_minutes,
@@ -158,7 +163,7 @@ async def calculate_processing_cost(video_path: Path, estimated_duration: float 
         "gpt_cost": round(gpt_cost, 4),
         "tts_cost": round(tts_cost, 4),
         "total_cost": round(total_cost, 4),
-        "estimated_processing_time": int(duration_minutes * 3)  # Rough: 3x duration
+        "estimated_processing_time": estimated_time_minutes
     }
 
 async def get_user_spending(user_id: str, period: str = "monthly") -> float:
