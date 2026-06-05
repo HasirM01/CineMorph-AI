@@ -13,6 +13,10 @@ from datetime import datetime, timezone, timedelta
 import aiofiles
 import asyncio
 import httpx
+import subprocess
+import json
+from emergentintegrations.llm.openai import OpenAISpeechToText, OpenAITextToSpeech
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -39,6 +43,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_SIZE = 500 * 1024 * 1024
+AI_MODE = os.environ.get('AI_MODE', 'mock')  # 'mock' or 'real'
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
+
+# AI Cost Configuration (approximate rates)
+WHISPER_COST_PER_MINUTE = 0.006  # $0.006 per minute
+GPT4O_INPUT_COST_PER_1M = 2.50   # $2.50 per 1M input tokens
+GPT4O_OUTPUT_COST_PER_1M = 10.00 # $10 per 1M output tokens
+TTS_COST_PER_1M_CHARS = 15.00    # $15 per 1M characters (tts-1)
+
+# Budget limits
+MONTHLY_BUDGET_LIMIT = 500  # ₹500 or equivalent in credits
+DAILY_BUDGET_LIMIT = 100    # ₹100 per day
+
+# Duration limits for POC
+MAX_VIDEO_DURATION_SECONDS = 60  # 1 minute max
 
 # ==================== Helper Functions ====================
 
@@ -69,6 +88,125 @@ async def range_file_reader(file_path: Path, start: int, end: int, chunk_size: i
                 break
             remaining -= len(chunk)
             yield chunk
+
+def get_video_duration(video_path: Path) -> float:
+    """Get video duration in seconds using FFprobe"""
+    try:
+        result = subprocess.run(
+            [
+                'ffprobe', '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'json',
+                str(video_path)
+            ],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        data = json.loads(result.stdout)
+        duration = float(data['format']['duration'])
+        return duration
+    except Exception as e:
+        logger.error(f"Failed to get video duration: {e}")
+        return 0.0
+
+def estimate_translation_tokens(text: str, target_language: str) -> dict:
+    """Estimate GPT-4o tokens for translation"""
+    # Rough estimate: ~1.3 tokens per word for English
+    # System prompt adds ~100 tokens
+    # Target language adds ~50 tokens
+    words = len(text.split())
+    input_tokens = int(words * 1.3) + 150
+    # Output is usually similar length or slightly longer
+    output_tokens = int(words * 1.5)
+    
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "input_cost": (input_tokens / 1_000_000) * GPT4O_INPUT_COST_PER_1M,
+        "output_cost": (output_tokens / 1_000_000) * GPT4O_OUTPUT_COST_PER_1M
+    }
+
+async def calculate_processing_cost(video_path: Path, estimated_duration: float = None) -> dict:
+    """Calculate estimated cost for processing a video"""
+    if estimated_duration is None:
+        estimated_duration = get_video_duration(video_path)
+    
+    duration_minutes = estimated_duration / 60.0
+    
+    # Whisper cost
+    whisper_cost = duration_minutes * WHISPER_COST_PER_MINUTE
+    
+    # Estimate transcription length (rough: 150 words per minute)
+    estimated_words = int(duration_minutes * 150)
+    estimated_text = " ".join(["word"] * estimated_words)
+    
+    # GPT-4o translation cost
+    translation_estimate = estimate_translation_tokens(estimated_text, "ta")
+    gpt_cost = translation_estimate["input_cost"] + translation_estimate["output_cost"]
+    
+    # TTS cost (character count approximately 5 chars per word)
+    estimated_chars = estimated_words * 5
+    tts_cost = (estimated_chars / 1_000_000) * TTS_COST_PER_1M_CHARS
+    
+    total_cost = whisper_cost + gpt_cost + tts_cost
+    
+    return {
+        "duration_seconds": estimated_duration,
+        "duration_minutes": duration_minutes,
+        "whisper_cost": round(whisper_cost, 4),
+        "gpt_cost": round(gpt_cost, 4),
+        "tts_cost": round(tts_cost, 4),
+        "total_cost": round(total_cost, 4),
+        "estimated_processing_time": int(duration_minutes * 3)  # Rough: 3x duration
+    }
+
+async def get_user_spending(user_id: str, period: str = "monthly") -> float:
+    """Get user's total spending for a period"""
+    now = datetime.now(timezone.utc)
+    
+    if period == "daily":
+        start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:  # monthly
+        start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    jobs = await db.dubbing_jobs.find({
+        "user_id": user_id,
+        "status": "completed",
+        "completed_at": {"$gte": start_date.isoformat()}
+    }, {"_id": 0}).to_list(1000)
+    
+    total_cost = sum(job.get("actual_cost", 0) for job in jobs)
+    return total_cost
+
+def get_language_code_iso(lang_code: str) -> str:
+    """Map our language codes to ISO 639-2 codes for FFmpeg metadata"""
+    iso_map = {
+        "en": "eng",
+        "ta": "tam",
+        "te": "tel",
+        "ml": "mal",
+        "kn": "kan",
+        "hi": "hin",
+        "es": "spa",
+        "fr": "fra",
+        "de": "deu",
+        "ja": "jpn",
+        "ko": "kor",
+        "zh": "chi",
+        "ar": "ara",
+        "pt": "por",
+        "ru": "rus"
+    }
+    return iso_map.get(lang_code, "und")
+
+def get_language_name(lang_code: str) -> str:
+    """Get full language name"""
+    for lang in LANGUAGES:
+        if lang["code"] == lang_code:
+            return lang["name"]
+    return "Unknown"
+
 
 async def recover_orphaned_jobs():
     """
@@ -322,6 +460,18 @@ VALID_LANGUAGE_CODES = {lang["code"] for lang in LANGUAGES}
 async def get_languages():
     return LANGUAGES
 
+
+@api_router.get("/config/ai")
+async def get_ai_config():
+    """Get AI processing configuration"""
+    return {
+        "ai_mode": AI_MODE,
+        "max_duration_seconds": MAX_VIDEO_DURATION_SECONDS,
+        "monthly_budget_limit": MONTHLY_BUDGET_LIMIT,
+        "daily_budget_limit": DAILY_BUDGET_LIMIT
+    }
+
+
 # ==================== Movie Upload Routes ====================
 
 @api_router.post("/movies/upload")
@@ -527,11 +677,302 @@ async def mock_ai_processing(job_id: str, movie_id: str, source_lang: str, targe
             }}
         )
 
+
+async def real_ai_processing(job_id: str, movie_id: str, source_lang: str, target_lang: str, user_id: str):
+    """
+    Real AI dubbing pipeline using Whisper + GPT-4o + OpenAI TTS
+    Creates multi-audio track output with original and dubbed audio
+    """
+    temp_audio_path = None
+    temp_dubbed_audio_path = None
+    actual_costs = {"whisper": 0, "gpt": 0, "tts": 0, "total": 0}
+    
+    try:
+        # Stage 1: Extract Audio
+        await db.dubbing_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "current_stage": "Extracting Audio",
+                "progress": 10,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "last_heartbeat": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        logger.info(f"Job {job_id}: Extracting audio...")
+        
+        movie = await db.movies.find_one({"movie_id": movie_id}, {"_id": 0})
+        if not movie:
+            raise Exception("Movie not found")
+        
+        video_path = Path(movie["file_path"])
+        if not video_path.exists():
+            raise Exception("Video file not found")
+        
+        # Extract audio to temp file
+        temp_audio_path = TEMP_DIR / f"{job_id}_audio.mp3"
+        subprocess.run(
+            [
+                'ffmpeg', '-i', str(video_path),
+                '-vn', '-acodec', 'mp3',
+                '-y', str(temp_audio_path)
+            ],
+            check=True,
+            capture_output=True
+        )
+        logger.info(f"Audio extracted to {temp_audio_path}")
+        
+        # Stage 2: Transcribe with Whisper
+        await db.dubbing_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "current_stage": "Transcribing Speech (Whisper)",
+                "progress": 30,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "last_heartbeat": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        logger.info(f"Job {job_id}: Transcribing with Whisper...")
+        
+        stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
+        with open(temp_audio_path, "rb") as audio_file:
+            whisper_response = await stt.transcribe(
+                file=audio_file,
+                model="whisper-1",
+                response_format="verbose_json"
+            )
+        
+        transcribed_text = whisper_response.text
+        detected_language = whisper_response.language if hasattr(whisper_response, 'language') else source_lang
+        
+        # Calculate Whisper cost
+        duration = whisper_response.duration if hasattr(whisper_response, 'duration') else get_video_duration(video_path)
+        actual_costs["whisper"] = (duration / 60.0) * WHISPER_COST_PER_MINUTE
+        
+        logger.info(f"Transcription complete. Detected language: {detected_language}")
+        logger.info(f"Transcribed text length: {len(transcribed_text)} characters")
+        
+        # Stage 3: Translate with GPT-4o
+        await db.dubbing_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "current_stage": "Translating Dialogues (GPT-4o)",
+                "progress": 50,
+                "detected_language": detected_language,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "last_heartbeat": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        logger.info(f"Job {job_id}: Translating with GPT-4o...")
+        
+        # Conversational translation prompts for South Indian languages
+        target_lang_name = get_language_name(target_lang)
+        
+        translation_prompts = {
+            "ta": "You are a professional Tamil cinema dialogue translator. Translate the following text to modern spoken conversational Tamil as used in contemporary Tamil cinema. Use natural, colloquial Tamil that sounds authentic to Tamil movie audiences. Avoid formal textbook Tamil. Preserve the emotional tone, context, and meaning of the original dialogue. Only return the translated text, nothing else.",
+            "te": "You are a professional Telugu cinema dialogue translator. Translate the following text to natural spoken conversational Telugu as used in Telugu cinema. Use authentic colloquial Telugu that resonates with Telugu movie audiences. Preserve emotions, context, and meaning. Only return the translated text, nothing else.",
+            "ml": "You are a professional Malayalam cinema dialogue translator. Translate the following text to natural spoken conversational Malayalam as used in Malayalam cinema. Use authentic colloquial Malayalam. Preserve emotions, context, and meaning. Only return the translated text, nothing else.",
+            "kn": "You are a professional Kannada cinema dialogue translator. Translate the following text to natural spoken conversational Kannada as used in Kannada cinema. Use authentic colloquial Kannada. Preserve emotions, context, and meaning. Only return the translated text, nothing else."
+        }
+        
+        system_prompt = translation_prompts.get(
+            target_lang,
+            f"You are a professional translator. Translate the following text to natural spoken conversational {target_lang_name}. Preserve emotions, context, and meaning. Only return the translated text, nothing else."
+        )
+        
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"translation_{job_id}",
+            system_message=system_prompt
+        ).with_model("openai", "gpt-4o")
+        
+        user_message = UserMessage(text=transcribed_text)
+        response_text = await chat.send_message(user_message)
+        translated_text = response_text
+        
+        # Estimate GPT cost (rough approximation)
+        token_estimate = estimate_translation_tokens(transcribed_text, target_lang)
+        actual_costs["gpt"] = token_estimate["input_cost"] + token_estimate["output_cost"]
+        
+        logger.info(f"Translation complete. Translated text length: {len(translated_text)} characters")
+        
+        # Stage 4: Generate Voice with OpenAI TTS
+        await db.dubbing_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "current_stage": "Generating AI Voice (OpenAI TTS)",
+                "progress": 70,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "last_heartbeat": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        logger.info(f"Job {job_id}: Generating voice with OpenAI TTS...")
+        
+        tts = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
+        temp_dubbed_audio_path = TEMP_DIR / f"{job_id}_dubbed_audio.mp3"
+        
+        audio_bytes = await tts.generate_speech(
+            text=translated_text,
+            model="tts-1",
+            voice="alloy",
+            response_format="mp3"
+        )
+        
+        with open(temp_dubbed_audio_path, "wb") as f:
+            f.write(audio_bytes)
+        
+        # Calculate TTS cost
+        actual_costs["tts"] = (len(translated_text) / 1_000_000) * TTS_COST_PER_1M_CHARS
+        actual_costs["total"] = sum(actual_costs.values())
+        
+        logger.info(f"Voice generation complete. Audio saved to {temp_dubbed_audio_path}")
+        
+        # Stage 5: Create Multi-Audio Track Video
+        await db.dubbing_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "current_stage": "Creating Multi-Audio Track Output",
+                "progress": 90,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "last_heartbeat": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        logger.info(f"Job {job_id}: Creating multi-audio track video...")
+        
+        output_filename = f"{job_id}_dubbed.mp4"
+        output_path = PROCESSED_DIR / output_filename
+        
+        source_lang_iso = get_language_code_iso(detected_language)
+        target_lang_iso = get_language_code_iso(target_lang)
+        source_lang_name = get_language_name(detected_language)
+        target_lang_name = get_language_name(target_lang)
+        
+        # FFmpeg command for multi-audio track muxing
+        subprocess.run(
+            [
+                'ffmpeg',
+                '-i', str(video_path),              # Input: original video
+                '-i', str(temp_dubbed_audio_path),  # Input: dubbed audio
+                '-map', '0:v',                      # Map video from first input
+                '-map', '0:a',                      # Map original audio from first input
+                '-map', '1:a',                      # Map dubbed audio from second input
+                '-metadata:s:a:0', f'language={source_lang_iso}',
+                '-metadata:s:a:0', f'title={source_lang_name} (Original)',
+                '-metadata:s:a:1', f'language={target_lang_iso}',
+                '-metadata:s:a:1', f'title={target_lang_name} (Dubbed)',
+                '-c:v', 'copy',                     # Copy video codec (no re-encoding)
+                '-c:a', 'aac',                      # Encode audio as AAC
+                '-b:a', '192k',                     # Audio bitrate
+                '-y',                               # Overwrite output
+                str(output_path)
+            ],
+            check=True,
+            capture_output=True
+        )
+        
+        logger.info(f"Multi-audio track video created: {output_path}")
+        
+        # Stage 6: Complete
+        await db.dubbing_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "status": "completed",
+                "progress": 100,
+                "current_stage": "Completed",
+                "output_path": str(output_path),
+                "detected_language": detected_language,
+                "actual_cost": round(actual_costs["total"], 4),
+                "cost_breakdown": {
+                    "whisper": round(actual_costs["whisper"], 4),
+                    "gpt": round(actual_costs["gpt"], 4),
+                    "tts": round(actual_costs["tts"], 4)
+                },
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "last_heartbeat": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        logger.info(f"Job {job_id} completed successfully. Total cost: ${actual_costs['total']:.4f}")
+        
+    except Exception as e:
+        logger.error(f"Job {job_id} failed: {str(e)}", exc_info=True)
+        await db.dubbing_jobs.update_one(
+            {"job_id": job_id},
+            {"$set": {
+                "status": "failed",
+                "current_stage": f"Failed: {str(e)}",
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+    finally:
+        # Cleanup temp files
+        if temp_audio_path and Path(temp_audio_path).exists():
+            Path(temp_audio_path).unlink()
+            logger.info(f"Cleaned up temp audio: {temp_audio_path}")
+        if temp_dubbed_audio_path and Path(temp_dubbed_audio_path).exists():
+            Path(temp_dubbed_audio_path).unlink()
+            logger.info(f"Cleaned up temp dubbed audio: {temp_dubbed_audio_path}")
+
+
+
+@api_router.post("/dubbing/estimate-cost")
+async def estimate_dubbing_cost(request: Request, current_user: dict = Depends(get_current_user)):
+    """Estimate processing cost for a video"""
+    data = await request.json()
+    movie_id = data.get("movie_id")
+    
+    movie = await db.movies.find_one({"movie_id": movie_id, "user_id": current_user["user_id"]}, {"_id": 0})
+    if not movie:
+        raise HTTPException(status_code=404, detail="Movie not found")
+    
+    video_path = Path(movie["file_path"])
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+    
+    # Check video duration
+    duration = get_video_duration(video_path)
+    if duration > MAX_VIDEO_DURATION_SECONDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video duration ({int(duration)}s) exceeds maximum allowed ({MAX_VIDEO_DURATION_SECONDS}s). Please use clips of 30 seconds or 1 minute for this POC."
+        )
+    
+    cost_estimate = await calculate_processing_cost(video_path, duration)
+    
+    # Check budget limits
+    monthly_spending = await get_user_spending(current_user["user_id"], "monthly")
+    daily_spending = await get_user_spending(current_user["user_id"], "daily")
+    
+    remaining_monthly = MONTHLY_BUDGET_LIMIT - monthly_spending
+    remaining_daily = DAILY_BUDGET_LIMIT - daily_spending
+    
+    budget_exceeded = False
+    budget_warning = None
+    
+    if cost_estimate["total_cost"] > remaining_monthly:
+        budget_exceeded = True
+        budget_warning = f"Processing would exceed monthly budget limit (₹{MONTHLY_BUDGET_LIMIT}). Remaining: ₹{remaining_monthly:.2f}"
+    elif cost_estimate["total_cost"] > remaining_daily:
+        budget_exceeded = True
+        budget_warning = f"Processing would exceed daily budget limit (₹{DAILY_BUDGET_LIMIT}). Remaining: ₹{remaining_daily:.2f}"
+    
+    return {
+        **cost_estimate,
+        "monthly_spending": round(monthly_spending, 2),
+        "daily_spending": round(daily_spending, 2),
+        "remaining_monthly_budget": round(remaining_monthly, 2),
+        "remaining_daily_budget": round(remaining_daily, 2),
+        "budget_exceeded": budget_exceeded,
+        "budget_warning": budget_warning,
+        "can_process": not budget_exceeded
+    }
+
+
 @api_router.post("/dubbing/create")
 async def create_dubbing_job(request: Request, current_user: dict = Depends(get_current_user)):
     data = await request.json()
     movie_id = data.get("movie_id")
     target_language = data.get("target_language")
+    cost_approved = data.get("cost_approved", False)
     
     if target_language not in VALID_LANGUAGE_CODES:
         raise HTTPException(status_code=400, detail=f"Invalid target language. Must be one of: {', '.join(VALID_LANGUAGE_CODES)}")
@@ -539,6 +980,31 @@ async def create_dubbing_job(request: Request, current_user: dict = Depends(get_
     movie = await db.movies.find_one({"movie_id": movie_id, "user_id": current_user["user_id"]}, {"_id": 0})
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
+    
+    # For real AI mode, check cost approval and budget
+    if AI_MODE == "real":
+        if not cost_approved:
+            raise HTTPException(status_code=400, detail="Cost approval required. Please estimate cost first and approve before processing.")
+        
+        # Verify video duration
+        video_path = Path(movie["file_path"])
+        duration = get_video_duration(video_path)
+        if duration > MAX_VIDEO_DURATION_SECONDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Video duration ({int(duration)}s) exceeds maximum allowed ({MAX_VIDEO_DURATION_SECONDS}s)."
+            )
+        
+        # Check budget
+        cost_estimate = await calculate_processing_cost(video_path, duration)
+        monthly_spending = await get_user_spending(current_user["user_id"], "monthly")
+        daily_spending = await get_user_spending(current_user["user_id"], "daily")
+        
+        if cost_estimate["total_cost"] + monthly_spending > MONTHLY_BUDGET_LIMIT:
+            raise HTTPException(status_code=403, detail="Monthly budget limit exceeded")
+        
+        if cost_estimate["total_cost"] + daily_spending > DAILY_BUDGET_LIMIT:
+            raise HTTPException(status_code=403, detail="Daily budget limit exceeded")
     
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     job_doc = {
@@ -551,6 +1017,7 @@ async def create_dubbing_job(request: Request, current_user: dict = Depends(get_
         "progress": 0,
         "current_stage": "Starting...",
         "output_path": None,
+        "ai_mode": AI_MODE,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "completed_at": None,
@@ -558,11 +1025,17 @@ async def create_dubbing_job(request: Request, current_user: dict = Depends(get_
     }
     await db.dubbing_jobs.insert_one(job_doc)
     
-    logger.info(f"Created dubbing job: {job_id} for movie: {movie_id}")
+    logger.info(f"Created dubbing job: {job_id} for movie: {movie_id} (AI_MODE: {AI_MODE})")
     
-    asyncio.create_task(mock_ai_processing(
-        job_id, movie_id, job_doc["source_language"], target_language, current_user["user_id"]
-    ))
+    # Choose processing function based on AI_MODE
+    if AI_MODE == "real":
+        asyncio.create_task(real_ai_processing(
+            job_id, movie_id, job_doc["source_language"], target_language, current_user["user_id"]
+        ))
+    else:
+        asyncio.create_task(mock_ai_processing(
+            job_id, movie_id, job_doc["source_language"], target_language, current_user["user_id"]
+        ))
     
     job_result = await db.dubbing_jobs.find_one({"job_id": job_id}, {"_id": 0})
     return job_result

@@ -10,9 +10,17 @@ H = {"Authorization": f"Bearer {SESSION_TOKEN}"}
 
 MP4 = b"\x00\x00\x00\x20ftypmp42" + b"\x00" * 2048
 
+# Real video for tests that go through the AI pipeline
+REAL_VIDEO = '/tmp/cinetest/test10s.mp4'
 
-def _upload():
-    files = {"file": ("TEST_movie2.mp4", MP4, "video/mp4")}
+
+def _upload(real=False):
+    if real and os.path.exists(REAL_VIDEO):
+        with open(REAL_VIDEO, 'rb') as f:
+            content = f.read()
+        files = {"file": ("TEST_movie2_real.mp4", content, "video/mp4")}
+    else:
+        files = {"file": ("TEST_movie2.mp4", MP4, "video/mp4")}
     r = requests.post(f"{BASE_URL}/api/movies/upload", files=files, headers=H)
     assert r.status_code == 200, r.text
     return r.json()["movie_id"]
@@ -20,7 +28,7 @@ def _upload():
 
 def _create_job(mid, target="ta"):
     r = requests.post(f"{BASE_URL}/api/dubbing/create",
-                      json={"movie_id": mid, "target_language": target}, headers=H)
+                      json={"movie_id": mid, "target_language": target, "cost_approved": True}, headers=H)
     return r
 
 
@@ -70,7 +78,7 @@ class TestStreaming:
 # ---- Full lifecycle: upload -> dub -> stream/download -> delete cascade ----
 class TestLifecycle:
     def test_full_workflow(self):
-        mid = _upload()
+        mid = _upload(real=True)
         r = _create_job(mid, "ta")
         assert r.status_code == 200, r.text
         jid = r.json()["job_id"]

@@ -5,6 +5,7 @@ import axios from 'axios';
 import { Upload, Film, CheckCircle, Loader2, Globe } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { DashboardLayout } from '@/components/DashboardLayout';
+import { CostEstimateCard } from '@/components/CostEstimateCard';
 import { toast } from 'sonner';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
@@ -18,9 +19,12 @@ export const UploadPage = () => {
   const [selectedLanguage, setSelectedLanguage] = useState('');
   const [languages, setLanguages] = useState([]);
   const [creatingJob, setCreatingJob] = useState(false);
+  const [showCostEstimate, setShowCostEstimate] = useState(false);
+  const [aiConfig, setAiConfig] = useState(null);
 
   React.useEffect(() => {
     fetchLanguages();
+    fetchAiConfig();
   }, []);
 
   const fetchLanguages = async () => {
@@ -29,6 +33,15 @@ export const UploadPage = () => {
       setLanguages(response.data);
     } catch (error) {
       console.error('Error fetching languages:', error);
+    }
+  };
+
+  const fetchAiConfig = async () => {
+    try {
+      const response = await axios.get(`${API}/config/ai`);
+      setAiConfig(response.data);
+    } catch (error) {
+      console.error('Error fetching AI config:', error);
     }
   };
 
@@ -86,6 +99,17 @@ export const UploadPage = () => {
       return;
     }
 
+    // Show cost estimate for real AI mode
+    if (aiConfig?.ai_mode === 'real') {
+      setShowCostEstimate(true);
+      return;
+    }
+
+    // Mock mode - create job directly
+    createDubbingJob(false);
+  };
+
+  const createDubbingJob = async (costApproved = false) => {
     setCreatingJob(true);
     try {
       const response = await axios.post(
@@ -93,6 +117,7 @@ export const UploadPage = () => {
         {
           movie_id: uploadedMovie.movie_id,
           target_language: selectedLanguage,
+          cost_approved: costApproved,
         },
         { withCredentials: true }
       );
@@ -107,10 +132,20 @@ export const UploadPage = () => {
     }
   };
 
+  const handleCostApproval = (estimate) => {
+    setShowCostEstimate(false);
+    createDubbingJob(true);
+  };
+
+  const handleCostCancel = () => {
+    setShowCostEstimate(false);
+  };
+
   const handleUploadAnother = () => {
     setUploadedMovie(null);
     setSelectedLanguage('');
     setUploadProgress(0);
+    setShowCostEstimate(false);
   };
 
   return (
@@ -219,6 +254,14 @@ export const UploadPage = () => {
                 </SelectContent>
               </Select>
             </div>
+
+            {showCostEstimate && (
+              <CostEstimateCard
+                movieId={uploadedMovie.movie_id}
+                onApprove={handleCostApproval}
+                onCancel={handleCostCancel}
+              />
+            )}
 
             <div className="flex gap-4">
               <button

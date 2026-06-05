@@ -89,9 +89,10 @@ class TestDubbing:
         mid = getattr(pytest, "movie_id", None)
         if not mid:
             pytest.skip("No movie uploaded")
+        # Pass cost_approved=True for real-mode compatibility (ignored in mock mode)
         r = requests.post(
             f"{BASE_URL}/api/dubbing/create",
-            json={"movie_id": mid, "target_language": "ta"},
+            json={"movie_id": mid, "target_language": "ta", "cost_approved": True},
             headers=auth_headers,
         )
         assert r.status_code == 200, r.text
