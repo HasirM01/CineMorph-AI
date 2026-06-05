@@ -1,0 +1,92 @@
+{
+  "project_name": "CineMorph AI",
+  "theme": "dark",
+  "archetype": "5 (Luxury) with Electric Neon Accents",
+  "colors": {
+    "background": {
+      "primary": "#0A0A0A",
+      "secondary": "#121212",
+      "tertiary": "#1A1A1A",
+      "glass": "rgba(18, 18, 18, 0.7)"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "muted": "#71717A"
+    },
+    "accent": {
+      "primary": "#E50914",
+      "secondary": "#8B5CF6",
+      "tertiary": "#3B82F6",
+      "gradient": "linear-gradient(90deg, #E50914 0%, #8B5CF6 100%)"
+    },
+    "borders": {
+      "default": "#27272A",
+      "focus": "#8B5CF6",
+      "glass": "rgba(255, 255, 255, 0.1)"
+    }
+  },
+  "typography": {
+    "fonts": {
+      "headings": "Outfit, sans-serif",
+      "body": "Manrope, sans-serif",
+      "indic": "Noto Sans, sans-serif"
+    },
+    "rules": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl font-black tracking-tighter text-white",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight text-zinc-100",
+      "h3": "text-xl sm:text-2xl font-semibold tracking-tight text-zinc-200",
+      "body": "text-base font-normal tracking-normal text-zinc-400",
+      "labels": "text-xs font-semibold tracking-widest uppercase text-zinc-500"
+    },
+    "special": "South Indian language text (Tamil, Telugu, Malayalam, Kannada) must be rendered prominently using Noto Sans fallback for high legibility and premium cultural feel."
+  },
+  "layout_spacing": {
+    "container": "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
+    "section_gap": "gap-12 md:gap-24",
+    "padding": "p-6 md:p-8 lg:p-12",
+    "grid_bento": "grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6"
+  },
+  "ui_components": {
+    "cards": {
+      "base": "bg-zinc-900/50 backdrop-blur-xl border border-white/10 rounded-2xl p-6",
+      "hover": "hover:-translate-y-1 hover:border-purple-500/50 hover:shadow-[0_8px_32px_rgba(139,92,246,0.15)] transition-all duration-300"
+    },
+    "buttons": {
+      "primary": "bg-red-600 hover:bg-red-700 text-white rounded-lg px-6 py-3 font-semibold shadow-[0_0_20px_rgba(229,9,20,0.4)] transition-all flex items-center justify-center",
+      "secondary": "bg-white/5 hover:bg-white/10 text-white border border-white/10 rounded-lg px-6 py-3 font-medium backdrop-blur-md transition-all",
+      "ghost": "text-zinc-400 hover:text-white hover:bg-white/5 rounded-lg px-4 py-2 transition-all"
+    },
+    "inputs": {
+      "base": "bg-black/50 border border-white/10 text-white rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent placeholder-zinc-600 transition-all"
+    },
+    "glass_header": "sticky top-0 z-50 bg-black/60 backdrop-blur-2xl border-b border-white/5"
+  },
+  "animations": {
+    "library": "framer-motion",
+    "page_transitions": "Fade in with slight upward Y-axis translation",
+    "hover_effects": "Smooth easing, soft glowing dropshadows, tracing beam borders for premium feel",
+    "processing": "Cinematic loading animations (e.g., sound-wave bars, glowing pulses) to represent AI dubbing progress"
+  },
+  "icons": {
+    "library": "lucide-react",
+    "usage": "Use stroke-width 1.5 for a sophisticated, sleek look"
+  },
+  "media_urls": {
+    "hero_abstract_bg": "https://images.unsplash.com/photo-1689443111130-6e9c7dfd8f9e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NjZ8MHwxfHNlYXJjaHwxfHxkYXJrJTIwZnV0dXJpc3RpYyUyMGdsb3dpbmclMjBpbnRlcmZhY2V8ZW58MHx8fHwxNzgwNDgxMTk3fDA&ixlib=rb-4.1.0&q=85",
+    "ai_sound_wave": "https://images.pexels.com/photos/27141312/pexels-photo-27141312.jpeg",
+    "movie_poster_sample": "https://images.unsplash.com/photo-1700922180758-b335f78a3d59?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHw0fHxjaW5lbWF0aWMlMjBtb3ZpZSUyMHBvc3RlciUyMGRhcmt8ZW58MHx8fHwxNzgwNDY3ODQ4fDA&ixlib=rb-4.1.0&q=85"
+  },
+  "testing": {
+    "attributes": "All interactive elements MUST include data-testid attribute (e.g., data-testid='upload-movie-btn')"
+  },
+  "instructions_to_main_agent": [
+    "Build a Left-sidebar dashboard structure using the 'Dark charcoal' and 'Matte black' theme.",
+    "Do NOT use standard white/light generic SaaS UI. This must feel like a premium OTT platform.",
+    "Implement Drag-and-Drop using Shadcn/Custom UI with soft glowing borders on hover.",
+    "Integrate Framer Motion for dashboard widget rendering and AI processing stage transitions.",
+    "Ensure the Google OAuth login page has a cinematic background (use hero_abstract_bg with heavy dark overlay).",
+    "Use Outfit font for big cinematic titles and Manrope for UI data/labels.",
+    "Never center everything; use asymmetric layouts and generous padding (p-6, p-8) to give a luxurious feel."
+  ]
+}
