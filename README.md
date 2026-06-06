@@ -2,6 +2,15 @@
 
 **AI-powered cinematic localization platform for natural conversational movie dubbing**
 
+## 🚀 Demo
+
+**Live Demo:** Coming Soon
+
+**GitHub Repository:**  
+https://github.com/HasirM01/CineMorph-AI
+
+---
+
 [![Status](https://img.shields.io/badge/status-MVP-success)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
