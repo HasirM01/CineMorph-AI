@@ -7,7 +7,7 @@ const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 export const AuthCallback = () => {
   const navigate = useNavigate();
-  const { setUser } = useAuth();
+  const { setUser, checkAuth } = useAuth();
   const hasProcessed = useRef(false);
 
   useEffect(() => {
@@ -30,8 +30,20 @@ export const AuthCallback = () => {
           { withCredentials: true }
         );
 
+        // Set user in context
         setUser(response.data);
-        navigate('/dashboard', { replace: true, state: { user: response.data } });
+        
+        // Wait a moment to ensure cookie is set
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Verify authentication worked by checking /auth/me
+        await checkAuth();
+        
+        // Navigate to dashboard with user data in state
+        navigate('/dashboard', { 
+          replace: true, 
+          state: { user: response.data } 
+        });
       } catch (error) {
         console.error('Auth error:', error);
         navigate('/login', { replace: true });
@@ -39,7 +51,7 @@ export const AuthCallback = () => {
     };
 
     processSession();
-  }, [navigate, setUser]);
+  }, [navigate, setUser, checkAuth]);
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-black">
