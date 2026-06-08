@@ -1254,7 +1254,7 @@ app.add_middleware(
 async def startup_event():
     logger.info("CineMorph AI backend starting...")
     
-    # Validate FFmpeg and ffprobe availability
+    # Validate FFmpeg and ffprobe availability (non-blocking)
     try:
         ffmpeg_result = subprocess.run(
             ['ffmpeg', '-version'],
@@ -1263,8 +1263,7 @@ async def startup_event():
             timeout=5
         )
         if ffmpeg_result.returncode != 0:
-            logger.error("FFmpeg is not working properly")
-            raise RuntimeError("FFmpeg validation failed")
+            logger.warning("FFmpeg is not working properly - Real AI processing will be limited")
         
         ffprobe_result = subprocess.run(
             ['ffprobe', '-version'],
@@ -1273,18 +1272,18 @@ async def startup_event():
             timeout=5
         )
         if ffprobe_result.returncode != 0:
-            logger.error("ffprobe is not working properly")
-            raise RuntimeError("ffprobe validation failed")
+            logger.warning("ffprobe is not working properly - Video duration detection will fail")
         
         logger.info("✓ FFmpeg and ffprobe are available and working")
         
     except FileNotFoundError as e:
-        logger.error(f"CRITICAL: FFmpeg or ffprobe not found in PATH: {e}")
-        logger.error("Please install FFmpeg: sudo apt-get install -y ffmpeg")
-        raise RuntimeError("FFmpeg/ffprobe not installed. Real AI processing will not work.")
+        logger.error(f"WARNING: FFmpeg or ffprobe not found in PATH: {e}")
+        logger.error("Real AI processing will not work. Install FFmpeg: sudo apt-get install -y ffmpeg")
+        logger.warning("Backend starting anyway to allow authentication and other features...")
+        # DO NOT raise - allow backend to start for auth/basic features
     except Exception as e:
         logger.error(f"Error validating FFmpeg: {e}")
-        raise
+        logger.warning("Backend starting anyway...")
     
     await recover_orphaned_jobs()
     logger.info("CineMorph AI backend ready!")
