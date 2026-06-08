@@ -4,7 +4,10 @@ import { motion } from 'framer-motion';
 
 export const Login = () => {
   const handleGoogleLogin = () => {
-    const redirectUrl = window.location.origin + '/dashboard';
+    // Redirect to app root, not /dashboard
+    // Emergent OAuth will append #session_id=xxx to this URL
+    // App.js will detect the hash and show AuthCallback component
+    const redirectUrl = window.location.origin;
     window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
   };
 
