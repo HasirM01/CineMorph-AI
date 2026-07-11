@@ -1453,7 +1453,7 @@ app.add_middleware(
 async def startup_event():
     logger.info("CineMorph AI backend starting...")
     
-    # Validate FFmpeg and ffprobe availability (non-blocking)
+    # Validate FFmpeg and ffprobe availability (FAIL FAST if missing)
     try:
         ffmpeg_result = subprocess.run(
             ['ffmpeg', '-version'],
@@ -1462,7 +1462,8 @@ async def startup_event():
             timeout=5
         )
         if ffmpeg_result.returncode != 0:
-            logger.warning("FFmpeg is not working properly - Real AI processing will be limited")
+            logger.error("❌ FFmpeg validation failed")
+            raise RuntimeError("FFmpeg is not working properly")
         
         ffprobe_result = subprocess.run(
             ['ffprobe', '-version'],
@@ -1471,21 +1472,25 @@ async def startup_event():
             timeout=5
         )
         if ffprobe_result.returncode != 0:
-            logger.warning("ffprobe is not working properly - Video duration detection will fail")
+            logger.error("❌ ffprobe validation failed")
+            raise RuntimeError("ffprobe is not working properly")
         
-        logger.info("✓ FFmpeg and ffprobe are available and working")
+        logger.info("✅ FFmpeg and ffprobe validated successfully")
         
     except FileNotFoundError as e:
-        logger.error(f"WARNING: FFmpeg or ffprobe not found in PATH: {e}")
-        logger.error("Real AI processing will not work. Install FFmpeg: sudo apt-get install -y ffmpeg")
-        logger.warning("Backend starting anyway to allow authentication and other features...")
-        # DO NOT raise - allow backend to start for auth/basic features
+        logger.error(f"❌ CRITICAL: FFmpeg or ffprobe not found in PATH: {e}")
+        logger.error("Deployment failed. FFmpeg must be installed before backend can start.")
+        logger.error("The /root/.emergent/on-restart.sh script should have installed FFmpeg automatically.")
+        raise RuntimeError("FFmpeg/ffprobe missing - deployment cannot proceed") from e
+    except subprocess.TimeoutExpired:
+        logger.error("❌ CRITICAL: FFmpeg validation timed out")
+        raise RuntimeError("FFmpeg validation timeout")
     except Exception as e:
-        logger.error(f"Error validating FFmpeg: {e}")
-        logger.warning("Backend starting anyway...")
+        logger.error(f"❌ CRITICAL: Error validating FFmpeg: {e}")
+        raise
     
     await recover_orphaned_jobs()
-    logger.info("CineMorph AI backend ready!")
+    logger.info("🚀 CineMorph AI backend ready!")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

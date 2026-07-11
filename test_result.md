@@ -216,20 +216,91 @@ frontend:
       - working: true
         agent: "testing"
         comment: "Upload page loads with all testids present"
+  
+  - task: "Dub Movie Button on Movies Page"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/pages/MoviesPage.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Tested 'Dub Movie' button on Movies page. Button displays correctly with blue-purple gradient styling, positioned between Preview and Delete buttons. All data-testid attributes present (dub-movie-btn-{movie_id}). Button opens DubbingModal on click."
+  
+  - task: "DubbingModal Component"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/DubbingModal.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Comprehensive E2E test passed. Modal opens with correct title 'Dub Movie', displays movie name, has close button (X) in top right. Language dropdown (data-testid: dubbing-modal-language-select) shows 14 available languages excluding source language. Movie details section displays source language, format, and size. Cancel and 'Get Cost Estimate' buttons present at bottom. All data-testid attributes verified: dubbing-modal, dubbing-modal-close-btn, dubbing-modal-language-select, dubbing-modal-cancel-btn, dubbing-modal-proceed-btn."
+  
+  - task: "Dubbing Cost Estimation Flow in Modal"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/DubbingModal.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Cost estimation flow works perfectly. After language selection, clicking 'Get Cost Estimate' shows loading state ('Estimating...'), then displays cost estimate section with: Total Cost in USD ($0.0199) and INR (~₹1.59) (data-testid: modal-cost-total), Estimated Time ~1m for 59s video (data-testid: modal-cost-time), Cost breakdown showing Whisper (STT), GPT-4o (Translation), and OpenAI TTS (Voice) costs (data-testid: modal-cost-breakdown). Budget warning section present (data-testid: modal-budget-warning) but not displayed when within budget. Back button (data-testid: modal-cost-back-btn) returns to language selection. Approve & Start button (data-testid: modal-cost-approve-btn) present."
+  
+  - task: "Dubbing Job Creation from Movies Page"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/DubbingModal.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Job creation flow works end-to-end. After approving cost estimate, 'Approve & Start' button shows loading state ('Starting...'), then displays success toast 'Dubbing job started successfully!'. Successfully redirects to Jobs page (/jobs). New job appears in jobs list showing 30% progress with 'Processing' status and current stage 'Transcribing Speech & Detecting Language (Whisper)'. Complete workflow: Movies page → Dub Movie button → Language selection → Cost estimate → Approve → Jobs page."
+  
+  - task: "Dubbing Modal Edge Cases and UX"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/components/DubbingModal.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Edge case handling verified. 'Get Cost Estimate' button is correctly DISABLED when no language is selected (better UX than error toast). Button becomes ENABLED after language selection. Cancel button closes modal. Close (X) button closes modal. Back button returns from cost estimate to language selection view. All modal interactions work smoothly."
+  
+  - task: "Movies Page Existing Functionality"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/pages/MoviesPage.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Verified existing functionality remains intact after adding Dub Movie feature. Preview button works correctly (opens video player with movie title and playback controls). Delete button present and functional. Navigation between Movies, Jobs, and other pages works correctly. No regressions detected."
 
 metadata:
   created_by: "main_agent"
-  version: "2.0"
-  test_sequence: 3
+  version: "2.1"
+  test_sequence: 4
   run_ui: true
 
 test_plan:
   current_focus:
-    - "Real AI Processing Pipeline (Whisper + GPT-4o + OpenAI TTS)"
-    - "Cost Estimation Endpoint"
-    - "Multi-Audio Track Video Generation"
-    - "CostEstimateCard Component"
-    - "Budget Protection Logic"
+    - "Dub Movie Button on Movies Page"
+    - "DubbingModal Component"
+    - "Dubbing Cost Estimation Flow in Modal"
+    - "Dubbing Job Creation from Movies Page"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -237,3 +308,5 @@ test_plan:
 agent_communication:
   - agent: "main"
     message: "Implemented Real AI POC with Emergent-only stack. All backend AI functions implemented: real_ai_processing replaces mock, cost estimation endpoint added, budget protection active. Frontend has CostEstimateCard for approval flow. AI_MODE=real in .env. Need E2E testing with a short test video (30-60 sec). Test should verify: 1) Cost estimation shows before processing, 2) Real AI pipeline executes all stages, 3) Multi-audio track MP4 is created with original + dubbed audio, 4) Budget tracking works, 5) Conversational translation quality for South Indian languages"
+  - agent: "testing"
+    message: "Completed comprehensive E2E testing of 'Dub Movie' workflow on Movies page. ALL TEST SCENARIOS PASSED. Tested: (1) Dub Movie button visibility and styling on movie cards, (2) DubbingModal opening with all required elements, (3) Language selection dropdown with 14 languages, (4) Cost estimation flow with USD/INR display and breakdown, (5) Job creation and redirect to Jobs page, (6) Modal close/cancel functionality, (7) Edge case handling (disabled button when no language selected), (8) Existing functionality (Preview button). The new feature integrates seamlessly with existing Movies page functionality. User can now initiate dubbing directly from Movies page without re-uploading. Cost transparency provided before job creation. Smooth navigation: Movies → Cost Estimate → Jobs. No regressions detected."
