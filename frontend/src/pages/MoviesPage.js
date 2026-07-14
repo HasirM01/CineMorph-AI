@@ -1,19 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
-import { Film, Trash2, Upload, Play } from 'lucide-react';
+import { Film, Trash2, Upload, Play, Languages } from 'lucide-react';
 import { DashboardLayout } from '@/components/DashboardLayout';
 import { VideoPlayer } from '@/components/VideoPlayer';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { DubbingModal } from '@/components/DubbingModal';
 import { toast } from 'sonner';
+import { useNavigate } from 'react-router-dom';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 export const MoviesPage = () => {
+  const navigate = useNavigate();
   const [movies, setMovies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [deleteDialog, setDeleteDialog] = useState({ isOpen: false, movieId: null, movieTitle: '' });
+  const [dubbingModal, setDubbingModal] = useState({ isOpen: false, movie: null });
 
   useEffect(() => {
     fetchMovies();
@@ -45,6 +49,20 @@ export const MoviesPage = () => {
       movieId: movie.movie_id,
       movieTitle: movie.title
     });
+  };
+
+  const handleDubClick = (movie) => {
+    setDubbingModal({
+      isOpen: true,
+      movie: movie
+    });
+  };
+
+  const handleDubbingSuccess = () => {
+    toast.success('Redirecting to Jobs page...');
+    setTimeout(() => {
+      navigate('/jobs');
+    }, 500);
   };
 
   const handleDeleteConfirm = async () => {
@@ -151,6 +169,14 @@ export const MoviesPage = () => {
                     Preview
                   </button>
                   <button
+                    data-testid={`dub-movie-btn-${movie.movie_id}`}
+                    onClick={() => handleDubClick(movie)}
+                    className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white rounded-lg px-4 py-3 font-semibold transition-all flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(59,130,246,0.3)]"
+                  >
+                    <Languages className="w-5 h-5" />
+                    Dub Movie
+                  </button>
+                  <button
                     data-testid={`delete-movie-btn-${movie.movie_id}`}
                     onClick={() => handleDeleteClick(movie)}
                     className="w-full bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/20 rounded-lg px-4 py-3 font-semibold transition-all flex items-center justify-center gap-2"
@@ -182,6 +208,16 @@ export const MoviesPage = () => {
         title="Delete Movie"
         message={`Are you sure you want to delete "${deleteDialog.movieTitle}"? This will also delete all related dubbing jobs and their outputs.`}
       />
+
+      <AnimatePresence>
+        {dubbingModal.isOpen && (
+          <DubbingModal
+            movie={dubbingModal.movie}
+            onClose={() => setDubbingModal({ isOpen: false, movie: null })}
+            onSuccess={handleDubbingSuccess}
+          />
+        )}
+      </AnimatePresence>
     </DashboardLayout>
   );
 };

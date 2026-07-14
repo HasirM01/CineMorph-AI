@@ -1,24 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 
 export const ProtectedRoute = ({ children }) => {
   const { user, loading } = useAuth();
   const location = useLocation();
-  const [isAuthenticated, setIsAuthenticated] = useState(
-    location.state?.user ? true : null
-  );
 
-  useEffect(() => {
-    if (location.state?.user) return;
-    if (user) {
-      setIsAuthenticated(true);
-    } else if (!loading) {
-      setIsAuthenticated(false);
-    }
-  }, [user, loading, location.state]);
+  // If we just came from auth callback with user data, we're authenticated
+  const hasJustLoggedIn = location.state?.user;
 
-  if (isAuthenticated === null || loading) {
+  // Show loading state while checking authentication
+  if (loading && !hasJustLoggedIn) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-black">
         <div className="text-white text-xl">Loading...</div>
@@ -26,7 +18,8 @@ export const ProtectedRoute = ({ children }) => {
     );
   }
 
-  if (!isAuthenticated) {
+  // If not authenticated and didn't just login, redirect to login
+  if (!user && !hasJustLoggedIn && !loading) {
     return <Navigate to="/login" replace />;
   }
 

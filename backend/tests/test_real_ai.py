@@ -53,8 +53,8 @@ class TestEstimateCost:
         for k in ["monthly_spending", "daily_spending", "remaining_monthly_budget",
                   "remaining_daily_budget", "budget_exceeded", "can_process"]:
             assert k in data
-        assert data["can_process"] is True
-        assert data["budget_exceeded"] is False
+        assert data["can_process"] == True
+        assert data["budget_exceeded"] == False
         assert data["duration_seconds"] > 0
         assert data["total_cost"] > 0
         # _id should not leak

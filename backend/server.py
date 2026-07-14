@@ -213,6 +213,171 @@ def get_language_name(lang_code: str) -> str:
     return "Unknown"
 
 
+async def detect_language_multi_sample(audio_path: Path, stt) -> dict:
+    """
+    Detect language using multiple audio samples for better accuracy
+    Extracts 3 samples from different parts and uses majority voting
+    """
+    import tempfile
+    
+    samples_data = []
+    
+    try:
+        # Get audio duration
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'json', str(audio_path)],
+            capture_output=True, text=True, check=True
+        )
+        duration = float(json.loads(result.stdout)['format']['duration'])
+        
+        # Define sample points (beginning, middle, end - 5 seconds each)
+        sample_points = [
+            (0, min(5, duration)),  # First 5 seconds
+            (max(0, duration/2 - 2.5), min(duration, duration/2 + 2.5)),  # Middle 5 seconds
+            (max(0, duration - 5), duration)  # Last 5 seconds
+        ]
+        
+        # Extract and analyze each sample
+        for idx, (start, end) in enumerate(sample_points):
+            if end - start < 1:  # Skip if sample too short
+                continue
+                
+            # Extract sample
+            sample_path = TEMP_DIR / f"lang_sample_{idx}.mp3"
+            subprocess.run(
+                ['ffmpeg', '-i', str(audio_path), '-ss', str(start), 
+                 '-t', str(end - start), '-y', str(sample_path)],
+                capture_output=True, check=True
+            )
+            
+            # Detect language
+            try:
+                with open(sample_path, 'rb') as f:
+                    response = await stt.transcribe(
+                        file=f,
+                        model="whisper-1",
+                        response_format="json"
+                    )
+                    detected_lang = response.language if hasattr(response, 'language') else 'en'
+                    samples_data.append({
+                        'language': detected_lang,
+                        'text_length': len(response.text) if hasattr(response, 'text') else 0
+                    })
+            finally:
+                if sample_path.exists():
+                    sample_path.unlink()
+        
+        # Majority voting
+        if samples_data:
+            lang_counts = {}
+            for sample in samples_data:
+                lang = sample['language']
+                lang_counts[lang] = lang_counts.get(lang, 0) + 1
+            
+            # Get most common language
+            detected_language = max(lang_counts, key=lang_counts.get)
+            confidence = lang_counts[detected_language] / len(samples_data)
+            
+            logger.info(f"Multi-sample detection: {detected_language} (confidence: {confidence:.2f})")
+            logger.info(f"Sample results: {lang_counts}")
+            
+            return {
+                'language': detected_language,
+                'confidence': confidence,
+                'samples': len(samples_data)
+            }
+        else:
+            # Fallback to single detection
+            with open(audio_path, 'rb') as f:
+                response = await stt.transcribe(file=f, model="whisper-1")
+                return {
+                    'language': response.language if hasattr(response, 'language') else 'en',
+                    'confidence': 0.5,
+                    'samples': 0
+                }
+    
+    except Exception as e:
+        logger.error(f"Multi-sample language detection failed: {e}")
+        # Fallback to simple detection
+        try:
+            with open(audio_path, 'rb') as f:
+                response = await stt.transcribe(file=f, model="whisper-1")
+                return {
+                    'language': response.language if hasattr(response, 'language') else 'en',
+                    'confidence': 0.3,
+                    'samples': 0
+                }
+        except:
+            return {'language': 'en', 'confidence': 0.1, 'samples': 0}
+
+
+async def generate_synchronized_dubbed_audio_simple(segments, translated_segments, tts, output_path, original_duration):
+    """
+    Generate dubbed audio with basic synchronization
+    Preserves segment order and adds silence gaps
+    """
+    import tempfile
+    
+    # Create concat file list
+    concat_file = TEMP_DIR / "concat_list.txt"
+    segment_files = []
+    
+    try:
+        with open(concat_file, 'w') as cf:
+            last_end = 0
+            
+            for idx, (orig_seg, trans_text) in enumerate(zip(segments, translated_segments)):
+                start = orig_seg.get('start', 0)
+                end = orig_seg.get('end', start + 2)
+                
+                # Add silence before this segment if needed
+                if start > last_end and last_end > 0:
+                    silence_duration = start - last_end
+                    cf.write(f"file 'silence_{idx}.mp3'\n")
+                    # Create silence file
+                    silence_file = TEMP_DIR / f"silence_{idx}.mp3"
+                    subprocess.run([
+                        'ffmpeg', '-f', 'lavfi', '-i', f'anullsrc=r=44100:d={silence_duration}',
+                        '-y', str(silence_file)
+                    ], capture_output=True, check=True)
+                    segment_files.append(silence_file)
+                
+                # Generate TTS for segment
+                if trans_text and trans_text.strip():
+                    audio_bytes = await tts.generate_speech(
+                        text=trans_text.strip(),
+                        model="tts-1",
+                        voice="alloy",
+                        response_format="mp3"
+                    )
+                    
+                    segment_file = TEMP_DIR / f"dubbed_seg_{idx}.mp3"
+                    with open(segment_file, 'wb') as f:
+                        f.write(audio_bytes)
+                    
+                    cf.write(f"file 'dubbed_seg_{idx}.mp3'\n")
+                    segment_files.append(segment_file)
+                
+                last_end = end
+        
+        # Concatenate all segments
+        subprocess.run([
+            'ffmpeg', '-f', 'concat', '-safe', '0', '-i', str(concat_file),
+            '-c:a', 'libmp3lame', '-b:a', '192k', '-y', str(output_path)
+        ], capture_output=True, check=True, cwd=TEMP_DIR)
+        
+        return output_path
+        
+    finally:
+        # Cleanup
+        if concat_file.exists():
+            concat_file.unlink()
+        for seg_file in segment_files:
+            if seg_file.exists():
+                seg_file.unlink()
+
+
 async def recover_orphaned_jobs():
     """
     Recover orphaned processing jobs on startup
@@ -726,28 +891,38 @@ async def real_ai_processing(job_id: str, movie_id: str, source_lang: str, targe
         )
         logger.info(f"Audio extracted to {temp_audio_path}")
         
-        # Stage 2: Transcribe with Whisper
+        # Stage 2: Transcribe with Whisper (with timestamps)
         await db.dubbing_jobs.update_one(
             {"job_id": job_id},
             {"$set": {
-                "current_stage": "Transcribing Speech (Whisper)",
+                "current_stage": "Transcribing Speech & Detecting Language (Whisper)",
                 "progress": 30,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "last_heartbeat": datetime.now(timezone.utc).isoformat()
             }}
         )
-        logger.info(f"Job {job_id}: Transcribing with Whisper...")
+        logger.info(f"Job {job_id}: Transcribing with Whisper and detecting language...")
         
         stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
+        
+        # Multi-sample language detection
+        lang_detection = await detect_language_multi_sample(temp_audio_path, stt)
+        detected_language = lang_detection['language']
+        detection_confidence = lang_detection['confidence']
+        
+        logger.info(f"Language detected: {detected_language} (confidence: {detection_confidence:.2f})")
+        
+        # Full transcription with timestamps
         with open(temp_audio_path, "rb") as audio_file:
             whisper_response = await stt.transcribe(
                 file=audio_file,
                 model="whisper-1",
-                response_format="verbose_json"
+                response_format="verbose_json",  # Get timestamps
+                timestamp_granularities=["segment"]  # Segment-level timestamps
             )
         
         transcribed_text = whisper_response.text
-        detected_language = whisper_response.language if hasattr(whisper_response, 'language') else source_lang
+        segments = whisper_response.segments if hasattr(whisper_response, 'segments') else []
         
         # Calculate Whisper cost
         duration = whisper_response.duration if hasattr(whisper_response, 'duration') else get_video_duration(video_path)
@@ -756,13 +931,14 @@ async def real_ai_processing(job_id: str, movie_id: str, source_lang: str, targe
         logger.info(f"Transcription complete. Detected language: {detected_language}")
         logger.info(f"Transcribed text length: {len(transcribed_text)} characters")
         
-        # Stage 3: Translate with GPT-4o
+        # Stage 3: Translate with GPT-4o (segment by segment for better sync)
         await db.dubbing_jobs.update_one(
             {"job_id": job_id},
             {"$set": {
                 "current_stage": "Translating Dialogues (GPT-4o)",
                 "progress": 50,
                 "detected_language": detected_language,
+                "detected_language_confidence": detection_confidence,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "last_heartbeat": datetime.now(timezone.utc).isoformat()
             }}
@@ -784,6 +960,7 @@ async def real_ai_processing(job_id: str, movie_id: str, source_lang: str, targe
             f"You are a professional translator. Translate the following text to natural spoken conversational {target_lang_name}. Preserve emotions, context, and meaning. Only return the translated text, nothing else."
         )
         
+        # Translate all text (for cost estimation, we translate in bulk)
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"translation_{job_id}",
@@ -791,45 +968,67 @@ async def real_ai_processing(job_id: str, movie_id: str, source_lang: str, targe
         ).with_model("openai", "gpt-4o")
         
         user_message = UserMessage(text=transcribed_text)
-        response_text = await chat.send_message(user_message)
-        translated_text = response_text
+        translated_text = await chat.send_message(user_message)
         
-        # Estimate GPT cost (rough approximation)
+        # Also translate segments individually for better synchronization
+        translated_segments = []
+        if segments:
+            for segment in segments:
+                if segment.get('text') and segment['text'].strip():
+                    seg_msg = UserMessage(text=segment['text'].strip())
+                    trans_seg = await chat.send_message(seg_msg)
+                    translated_segments.append(trans_seg)
+                else:
+                    translated_segments.append("")
+        
+        # Estimate GPT cost
         token_estimate = estimate_translation_tokens(transcribed_text, target_lang)
+        # Add cost for segment translations
+        if translated_segments:
+            token_estimate["output_tokens"] *= 1.1  # 10% overhead for multiple calls
         actual_costs["gpt"] = token_estimate["input_cost"] + token_estimate["output_cost"]
         
-        logger.info(f"Translation complete. Translated text length: {len(translated_text)} characters")
+        logger.info(f"Translation complete. {len(translated_segments)} segments translated")
         
-        # Stage 4: Generate Voice with OpenAI TTS
+        # Stage 4: Generate Synchronized Voice with OpenAI TTS
         await db.dubbing_jobs.update_one(
             {"job_id": job_id},
             {"$set": {
-                "current_stage": "Generating AI Voice (OpenAI TTS)",
+                "current_stage": "Generating Synchronized AI Voice (OpenAI TTS)",
                 "progress": 70,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "last_heartbeat": datetime.now(timezone.utc).isoformat()
             }}
         )
-        logger.info(f"Job {job_id}: Generating voice with OpenAI TTS...")
+        logger.info(f"Job {job_id}: Generating synchronized voice...")
         
         tts = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
         temp_dubbed_audio_path = TEMP_DIR / f"{job_id}_dubbed_audio.mp3"
         
-        audio_bytes = await tts.generate_speech(
-            text=translated_text,
-            model="tts-1",
-            voice="alloy",
-            response_format="mp3"
-        )
-        
-        with open(temp_dubbed_audio_path, "wb") as f:
-            f.write(audio_bytes)
+        # Generate synchronized audio if we have segments
+        if segments and translated_segments:
+            logger.info(f"Generating {len(translated_segments)} synchronized segments...")
+            await generate_synchronized_dubbed_audio_simple(
+                segments, translated_segments, tts, 
+                temp_dubbed_audio_path, duration
+            )
+        else:
+            # Fallback to simple TTS if no segments
+            audio_bytes = await tts.generate_speech(
+                text=translated_text,
+                model="tts-1",
+                voice="alloy",
+                response_format="mp3"
+            )
+            with open(temp_dubbed_audio_path, "wb") as f:
+                f.write(audio_bytes)
         
         # Calculate TTS cost
-        actual_costs["tts"] = (len(translated_text) / 1_000_000) * TTS_COST_PER_1M_CHARS
+        total_chars = sum(len(s) for s in translated_segments) if translated_segments else len(translated_text)
+        actual_costs["tts"] = (total_chars / 1_000_000) * TTS_COST_PER_1M_CHARS
         actual_costs["total"] = sum(actual_costs.values())
         
-        logger.info(f"Voice generation complete. Audio saved to {temp_dubbed_audio_path}")
+        logger.info(f"Synchronized voice generation complete")
         
         # Stage 5: Create Multi-Audio Track Video
         await db.dubbing_jobs.update_one(
@@ -1254,7 +1453,7 @@ app.add_middleware(
 async def startup_event():
     logger.info("CineMorph AI backend starting...")
     
-    # Validate FFmpeg and ffprobe availability
+    # Validate FFmpeg and ffprobe availability (FAIL FAST if missing)
     try:
         ffmpeg_result = subprocess.run(
             ['ffmpeg', '-version'],
@@ -1263,8 +1462,8 @@ async def startup_event():
             timeout=5
         )
         if ffmpeg_result.returncode != 0:
-            logger.error("FFmpeg is not working properly")
-            raise RuntimeError("FFmpeg validation failed")
+            logger.error("❌ FFmpeg validation failed")
+            raise RuntimeError("FFmpeg is not working properly")
         
         ffprobe_result = subprocess.run(
             ['ffprobe', '-version'],
@@ -1273,21 +1472,25 @@ async def startup_event():
             timeout=5
         )
         if ffprobe_result.returncode != 0:
-            logger.error("ffprobe is not working properly")
-            raise RuntimeError("ffprobe validation failed")
+            logger.error("❌ ffprobe validation failed")
+            raise RuntimeError("ffprobe is not working properly")
         
-        logger.info("✓ FFmpeg and ffprobe are available and working")
+        logger.info("✅ FFmpeg and ffprobe validated successfully")
         
     except FileNotFoundError as e:
-        logger.error(f"CRITICAL: FFmpeg or ffprobe not found in PATH: {e}")
-        logger.error("Please install FFmpeg: sudo apt-get install -y ffmpeg")
-        raise RuntimeError("FFmpeg/ffprobe not installed. Real AI processing will not work.")
+        logger.error(f"❌ CRITICAL: FFmpeg or ffprobe not found in PATH: {e}")
+        logger.error("Deployment failed. FFmpeg must be installed before backend can start.")
+        logger.error("The /root/.emergent/on-restart.sh script should have installed FFmpeg automatically.")
+        raise RuntimeError("FFmpeg/ffprobe missing - deployment cannot proceed") from e
+    except subprocess.TimeoutExpired:
+        logger.error("❌ CRITICAL: FFmpeg validation timed out")
+        raise RuntimeError("FFmpeg validation timeout")
     except Exception as e:
-        logger.error(f"Error validating FFmpeg: {e}")
+        logger.error(f"❌ CRITICAL: Error validating FFmpeg: {e}")
         raise
     
     await recover_orphaned_jobs()
-    logger.info("CineMorph AI backend ready!")
+    logger.info("🚀 CineMorph AI backend ready!")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
