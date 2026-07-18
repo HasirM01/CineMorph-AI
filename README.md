@@ -27,6 +27,66 @@ CineMorph AI transforms movies and videos into any language using advanced AI du
 
 ---
 
+## 📸 Application Screenshots
+
+### 🏠 Home Page
+
+![Home Page](screenshots/01_Home_Page.png)
+
+### ✨ Features Overview
+
+![Features Overview](screenshots/02_Features_Overview.png)
+
+### 🔐 User Login
+
+![User Login](screenshots/03_User_Login_Page.png)
+
+### 📊 Dashboard
+
+![Dashboard](screenshots/04_Dashboard_Page.png)
+
+### 📈 Dashboard Statistics
+
+![Dashboard Statistics](screenshots/05_Dashboard_Statistics.png)
+
+### 🎥 Movie Upload
+
+![Movie Upload](screenshots/06_Movie_Upload_Page.png)
+
+### ⏳ Upload Progress
+
+![Upload Progress](screenshots/07_Movie_Upload_Progress.png)
+
+### ✅ Upload Success
+
+![Upload Success](screenshots/08_Movie_Upload_Success.png)
+
+### 🎬 Movie Library
+
+![Movie Library](screenshots/09_Movie_Library_Page.png)
+
+### 🌍 Target Language Selection
+
+![Target Language Selection](screenshots/10_Target_Language_Selection.png)
+
+### 💰 Dubbing Cost Estimation
+
+![Dubbing Cost Estimation](screenshots/11_Dubbing_Cost_Estimation.png)
+
+### 🤖 Dubbing Job Status
+
+![Dubbing Job Status](screenshots/12_Dubbing_Job_Status.png)
+
+### 📥 Download Dubbed Movie
+
+![Download Dubbed Movie](screenshots/13_Download_Dubbed_Movie.png)
+
+### ⚙️ User Settings
+
+![User Settings](screenshots/14_User_Settings_Page.png)
+
+---
+
 ## ✨ Features
 
 ### Core Functionality
