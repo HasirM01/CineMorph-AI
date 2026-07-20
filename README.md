@@ -1,5 +1,9 @@
 # CineMorph AI - Intelligent Multilingual Movie Dubbing Platform
 
+<p align="center">
+  <img src="screenshots/Banner.png" alt="CineMorph AI Banner" width="1000">
+</p>
+
 **AI-powered cinematic localization platform for natural conversational movie dubbing**
 
 ## 🚀 Demo
